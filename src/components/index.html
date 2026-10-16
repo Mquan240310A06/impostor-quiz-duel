@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Impostor vs Crewmate Quiz Duel</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @keyframes pulse-fast {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.85; transform: scale(1.02); }
+    }
+    .duel-pulse { animation: pulse-fast 1s infinite ease-in-out; }
+  </style>
+</head>
+<body class="bg-neutral-950 text-white min-h-screen flex items-center justify-center p-4">
+  <div id="game-container" class="w-full max-w-xl bg-neutral-900 border-2 border-red-600 rounded-2xl p-6 shadow-2xl relative">
+    
+    <!-- Header -->
+    <div class="flex justify-between items-center border-b border-neutral-750 pb-3 mb-4">
+      <div class="flex items-center gap-2">
+        <span class="text-xs px-2.5 py-1 rounded-full uppercase font-black bg-red-600 text-white duel-pulse">
+          1v1 Duel
+        </span>
+        <span class="text-sm font-semibold text-neutral-300">Đối thủ: <strong class="text-red-400">Impostor_99</strong></span>
+      </div>
+      <div id="timer" class="text-2xl font-mono font-black text-amber-400">6.0s</div>
+    </div>
+
+    <!-- Thanh đếm ngược thời gian -->
+    <div class="w-full bg-neutral-800 h-2.5 rounded-full overflow-hidden mb-6">
+      <div id="progress" class="h-full bg-gradient-to-r from-emerald-500 via-amber-500 to-red-600 w-full transition-all duration-100 ease-linear"></div>
+    </div>
+
+    <!-- Câu hỏi -->
+    <div class="min-h-[80px] flex items-center justify-center text-center px-2 mb-6">
+      <h2 id="question" class="text-2xl font-extrabold text-white">5 + 7 x 2 = ?</h2>
+    </div>
+
+    <!-- 4 Nút đáp án Kahoot Style -->
+    <div class="grid grid-cols-2 gap-4">
+      <button onclick="choose(0)" class="flex items-center gap-3 p-4 rounded-xl bg-red-600 hover:bg-red-500 active:scale-95 transition-all font-bold text-lg">
+        <span class="bg-black/30 w-8 h-8 rounded flex items-center justify-center font-black">▲</span>
+        <span>24</span>
+      </button>
+
+      <button onclick="choose(1)" class="flex items-center gap-3 p-4 rounded-xl bg-blue-600 hover:bg-blue-500 active:scale-95 transition-all font-bold text-lg">
+        <span class="bg-black/30 w-8 h-8 rounded flex items-center justify-center font-black">◆</span>
+        <span>19</span>
+      </button>
+
+      <button onclick="choose(2)" class="flex items-center gap-3 p-4 rounded-xl bg-amber-500 hover:bg-amber-400 active:scale-95 transition-all font-bold text-lg">
+        <span class="bg-black/30 w-8 h-8 rounded flex items-center justify-center font-black">●</span>
+        <span>17</span>
+      </button>
+
+      <button onclick="choose(3)" class="flex items-center gap-3 p-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all font-bold text-lg">
+        <span class="bg-black/30 w-8 h-8 rounded flex items-center justify-center font-black">■</span>
+        <span>22</span>
+      </button>
+    </div>
+
+    <!-- Thông báo kết quả -->
+    <div id="overlay" class="hidden absolute inset-0 bg-black/90 rounded-2xl flex-col items-center justify-center text-center p-6">
+      <div id="result-icon" class="text-6xl mb-2"></div>
+      <div id="result-title" class="text-3xl font-black uppercase mb-2"></div>
+      <p id="result-desc" class="text-neutral-300 text-sm"></p>
+    </div>
+  </div>
+
+  <script>
+    let timeLeft = 6000;
+    const totalTime = 6000;
+    let timerInterval = null;
+    let selected = false;
+
+    const timerEl = document.getElementById('timer');
+    const progressEl = document.getElementById('progress');
+    const overlayEl = document.getElementById('overlay');
+    const iconEl = document.getElementById('result-icon');
+    const titleEl = document.getElementById('result-title');
+    const descEl = document.getElementById('result-desc');
+
+    timerInterval = setInterval(() => {
+      timeLeft -= 50;
+      if (timeLeft <= 0) {
+        clearInterval(timerInterval);
+        showResult('DRAW', 'HÒA NHAU!', 'Hết thời gian! Cả hai bị choáng 3 giây.', '⚡', 'text-amber-400');
+        return;
+      }
+      timerEl.innerText = (timeLeft / 1000).toFixed(1) + 's';
+      progressEl.style.width = (timeLeft / totalTime * 100) + '%';
+    }, 50);
+
+    function choose(idx) {
+      if (selected) return;
+      selected = true;
+      clearInterval(timerInterval);
+
+      if (idx === 1) { // 19 là đáp án đúng
+        showResult('WIN', 'CHIẾN THẮNG!', 'Bạn đã bấm đúng và phản xạ nhanh hơn!', '👑', 'text-emerald-400');
+      } else {
+        showResult('LOSE', 'BỊ HẠ GỤC!', 'Bạn đã chọn sai đáp án và bị xử thua!', '💀', 'text-red-500');
+      }
+    }
+
+    function showResult(status, title, desc, icon, colorClass) {
+      overlayEl.classList.remove('hidden');
+      overlayEl.classList.add('flex');
+      iconEl.innerText = icon;
+      titleEl.innerText = title;
+      titleEl.className = 'text-3xl font-black uppercase mb-2 ' + colorClass;
+      descEl.innerText = desc;
+    }
+  </script>
+</body>
+</html>
