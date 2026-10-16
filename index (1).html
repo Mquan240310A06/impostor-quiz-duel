@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Impostor vs Crewmate — Quiz Duel</title>
+<link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Nunito:wght@500;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  body{background:#0d1b24;color:#e8f1f5;font-family:'Nunito',sans-serif}
+  .display{font-family:'Lilita One',sans-serif;letter-spacing:.02em}
+  @keyframes pop{from{transform:scale(.85);opacity:0}to{transform:scale(1);opacity:1}}
+  @keyframes ring{0%,100%{box-shadow:0 0 0 0 #e5383b88}50%{box-shadow:0 0 0 18px #e5383b00}}
+  .pop{animation:pop .25s ease-out}.ring{animation:ring 1s infinite}
+  @media (prefers-reduced-motion:reduce){.pop,.ring{animation:none}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const socket = io(location.protocol === 'file:' ? 'http://localhost:3000' : undefined);
+const OPT = [
+  { bg: '#e5383b', icon: '▲' }, { bg: '#2a7fff', icon: '◆' },
+  { bg: '#f4b400', icon: '●' }, { bg: '#2eb872', icon: '■' },
+];
+
+/* ============ SOLO DUEL MODAL ============ */
+function DuelModal({ duel, result, myId, onAnswer }) {
+  const [picked, setPicked] = useState(null);
+  const [left, setLeft] = useState(1);
+  useEffect(() => {
+    setPicked(null);
+    const t0 = performance.now(); let raf;
+    const tick = () => {
+      const p = 1 - (performance.now() - t0) / duel.durationMs;
+      setLeft(Math.max(p, 0));
+      if (p > 0) raf = requestAnimationFrame(tick);
+    };
+    tick(); return () => cancelAnimationFrame(raf);
+  }, [duel.duelId]);
+
+  const locked = picked !== null || !!result;
+  const click = i => { if (locked) return; setPicked(i); onAnswer(i); };
+  useEffect(() => {                       // phím tắt 1-4 / Q W E R cho phản xạ nhanh
+    const h = e => { const i = ['1','2','3','4'].indexOf(e.key); if (i > -1) click(i); };
+    window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h);
+  });
+  const verdict = !result ? null : result.outcome === 'draw' ? ['HÒA — bị choáng 3 giây', '#f4b400']
+    : result.winnerId === myId ? ['THẮNG!', '#2eb872'] : ['THUA!', '#e5383b'];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: '#0d1b24ee' }}>
+      <div className="pop w-full max-w-3xl">
+        <div className="display text-center text-lg mb-2" style={{ color: '#e5383b' }}>⚔ SOLO QUIZ — trả lời nhanh để sống sót</div>
+        <div className="h-4 rounded-full overflow-hidden mb-5" style={{ background: '#1c313f' }}>
+          <div className="h-full" style={{ width: left * 100 + '%', background: left > .4 ? '#2eb872' : left > .2 ? '#f4b400' : '#e5383b' }} />
+        </div>
+        <div className="display text-3xl sm:text-5xl text-center mb-6 min-h-[5rem]">{duel.question}</div>
+        <div className="grid grid-cols-2 gap-3">
+          {duel.options.map((o, i) => {
+            const correct = result && result.correctOption === i;
+            return (
+              <button key={i} onClick={() => click(i)} disabled={locked}
+                className="display text-xl sm:text-3xl rounded-xl py-6 px-4 flex items-center gap-3 transition-transform active:scale-95 focus-visible:outline focus-visible:outline-4 focus-visible:outline-white"
+                style={{ background: OPT[i].bg, opacity: locked && !correct && picked !== i ? .35 : 1,
+                  outline: correct ? '5px solid #fff' : picked === i ? '5px solid #0d1b24' : 'none' }}>
+                <span>{OPT[i].icon}</span><span className="flex-1 text-left">{o}</span>
+                <span className="text-sm opacity-70">{i + 1}</span>
+              </button>);
+          })}
+        </div>
+        <div className="h-14 mt-5 text-center display text-3xl" style={{ color: verdict?.[1] }}>
+          {verdict ? verdict[0] : picked !== null ? 'Đã gửi — chờ đối thủ…' : ''}
+        </div>
+      </div>
+    </div>);
+}
+
+/* ============ MÀN CHƠI (canvas 2D top-down) ============ */
+const ROOMS = [[40,40,420,300,'Reactor'],[740,40,420,300,'Lab'],[40,380,360,280,'Storage'],[440,400,320,260,'Cafeteria'],[800,380,360,280,'Engine']];
+
+function Game({ init, stRef, myId, duelIds, onKill, onTask }) {
+  const cv = useRef(null), pos = useRef({}), duelRef = useRef(duelIds);
+  duelRef.current = duelIds;
+
+  useEffect(() => {
+    const keys = {}; let last = '';
+    const send = () => {
+      const dx = (keys.d || keys.arrowright ? 1 : 0) - (keys.a || keys.arrowleft ? 1 : 0);
+      const dy = (keys.s || keys.arrowdown ? 1 : 0) - (keys.w || keys.arrowup ? 1 : 0);
+      const k = dx + ',' + dy; if (k !== last) { last = k; socket.emit('player_move', { dx, dy }); }
+    };
+    const dn = e => { const k = e.key.toLowerCase();
+      if (k === 'k') onKill(); else if (k === 'e') onTask(); else { keys[k] = true; send(); } };
+    const up = e => { keys[e.key.toLowerCase()] = false; send(); };
+    window.addEventListener('keydown', dn); window.addEventListener('keyup', up);
+
+    const ctx = cv.current.getContext('2d'); let raf;
+    const draw = () => {
+      const s = stRef.current;
+      ctx.fillStyle = '#0d1b24'; ctx.fillRect(0, 0, 1200, 700);
+      ctx.lineWidth = 4; ctx.font = '700 16px Nunito';
+      ROOMS.forEach(([x, y, w, h, n]) => { ctx.fillStyle = '#14293a'; ctx.strokeStyle = '#2d4a5e';
+        ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h); ctx.fillStyle = '#4f7690'; ctx.fillText(n, x + 12, y + 26); });
+      init.stations.forEach(st => { ctx.fillStyle = '#f4b400'; ctx.fillRect(st.x - 14, st.y - 14, 28, 28);
+        ctx.fillStyle = '#0d1b24'; ctx.fillText('E', st.x - 5, st.y + 6); });
+      (s.bodies || []).forEach(b => { ctx.strokeStyle = b.color; ctx.lineWidth = 6; ctx.beginPath();
+        ctx.moveTo(b.x - 14, b.y - 14); ctx.lineTo(b.x + 14, b.y + 14); ctx.moveTo(b.x + 14, b.y - 14); ctx.lineTo(b.x - 14, b.y + 14); ctx.stroke(); });
+      (s.players || []).forEach(p => {
+        const c = pos.current[p.id] || (pos.current[p.id] = { x: p.x, y: p.y });
+        c.x += (p.x - c.x) * .35; c.y += (p.y - c.y) * .35;            // nội suy chống giật
+        ctx.globalAlpha = p.isAlive ? 1 : .3;
+        if (duelRef.current.includes(p.id)) { ctx.strokeStyle = '#e5383b'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(c.x, c.y, 46, 0, 7); ctx.stroke(); }
+        ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(c.x, c.y, 18, 0, 7); ctx.fill();
+        if (p.id === myId) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke(); }
+        ctx.fillStyle = init.mates.includes(p.id) ? '#e5383b' : '#e8f1f5'; ctx.textAlign = 'center';
+        ctx.fillText(p.name + (p.stunned ? ' 💫' : ''), c.x, c.y - 28);
+        if (duelRef.current.includes(p.id)) { ctx.font = '26px serif'; ctx.fillText('⚔️', c.x, c.y - 52); ctx.font = '700 16px Nunito'; }
+        ctx.textAlign = 'left'; ctx.globalAlpha = 1;
+      });
+      raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => { window.removeEventListener('keydown', dn); window.removeEventListener('keyup', up); cancelAnimationFrame(raf); };
+  }, []);
+  return <canvas ref={cv} width="1200" height="700" className="w-full rounded-xl border-2" style={{ borderColor: '#2d4a5e', maxHeight: '75vh', objectFit: 'contain' }} />;
+}
+
+/* ============ APP ============ */
+function App() {
+  const [screen, setScreen] = useState('home');
+  const [name, setName] = useState(''); const [pin, setPin] = useState(''); const [err, setErr] = useState('');
+  const [cfg, setCfg] = useState({ duelSec: 6, killCd: 15 });
+  const [lobby, setLobby] = useState(null), [init, setInit] = useState(null), [over, setOver] = useState(null);
+  const [duel, setDuel] = useState(null), [result, setResult] = useState(null), [duelIds, setDuelIds] = useState([]);
+  const [toast, setToast] = useState(''), [cdAt, setCdAt] = useState(0), [, tick] = useState(0), [pct, setPct] = useState(0);
+  const stRef = useRef({ players: [], bodies: [], tasks: { done: 0, total: 1 } });
+  const cdRef = useRef(0); const me = socket.id;
+
+  useEffect(() => {
+    socket.on('lobby_update', l => { setLobby(l); setScreen(s => s === 'home' ? 'lobby' : s); });
+    socket.on('game_start', d => { setInit(d); cdRef.current = Date.now() + d.settings.killCd; setOver(null); setScreen('game'); });
+    socket.on('state', s => { stRef.current = s; setPct(Math.round(s.tasks.done / s.tasks.total * 100)); });
+    socket.on('duel_mark', d => setDuelIds(d.ids));
+    socket.on('duel_end', () => setDuelIds([]));
+    socket.on('duel_start', d => { setResult(null); setDuel(d); });
+    socket.on('duel_result', r => {
+      setResult(r); if (r.outcome === 'win_impostor') cdRef.current = Date.now() + r.killCdMs;
+      setTimeout(() => { setDuel(null); setResult(null); }, 2200);
+    });
+    socket.on('announce', a => { setToast(a.text); setTimeout(() => setToast(''), 4000); });
+    socket.on('game_over', o => setTimeout(() => { setOver(o); setScreen('over'); }, 2300));
+    const iv = setInterval(() => tick(n => n + 1), 250);
+    return () => clearInterval(iv);
+  }, []);
+
+  const nearest = (range, list) => { const m = stRef.current.players.find(p => p.id === me); if (!m) return null;
+    let best = null, bd = range; list.forEach(o => { const d = Math.hypot(o.x - m.x, o.y - m.y); if (d <= bd) { bd = d; best = o; } }); return best; };
+  const onKill = () => { if (!init || init.role !== 'impostor' || Date.now() < cdRef.current) return;
+    const t = nearest(init.killRange, stRef.current.players.filter(p => p.isAlive && p.id !== me && !init.mates.includes(p.id)));
+    if (t) socket.emit('trigger_kill_duel', { targetId: t.id }); };
+  const onTask = () => { if (!init || init.role !== 'crew') return;
+    const i = init.stations.findIndex(s => nearest(80, [s])); if (i > -1) socket.emit('do_task', { idx: i }); };
+  const go = (ev, extra) => socket.emit(ev, { name, pin, ...cfg, ...extra }, r => { if (r?.error) setErr(r.error); else setErr(''); });
+  const cdLeft = Math.max(0, Math.ceil((cdRef.current - Date.now()) / 1000));
+  const inp = 'rounded-lg px-4 py-3 text-lg font-bold w-full outline-none focus:ring-4 ring-sky-500';
+
+  if (screen === 'home') return (
+    <div className="min-h-screen flex items-center justify-center p-4"><div className="w-full max-w-md space-y-3">
+      <h1 className="display text-5xl leading-none">Impostor <span style={{ color: '#e5383b' }}>vs</span> Crewmate<br />Quiz Duel</h1>
+      <p style={{ color: '#7ea1b8' }}>Chạm mặt Impostor? Không chạy được — chỉ có trả lời nhanh hơn.</p>
+      <input className={inp} style={{ background: '#14293a' }} placeholder="Tên của bạn" value={name} onChange={e => setName(e.target.value)} maxLength={12} />
+      <div className="grid grid-cols-2 gap-3">
+        <label className="text-sm">Giây mỗi câu<input type="number" className={inp} style={{ background: '#14293a' }} value={cfg.duelSec} onChange={e => setCfg({ ...cfg, duelSec: e.target.value })} /></label>
+        <label className="text-sm">Hồi chiêu Kill (s)<input type="number" className={inp} style={{ background: '#14293a' }} value={cfg.killCd} onChange={e => setCfg({ ...cfg, killCd: e.target.value })} /></label>
+      </div>
+      <button className="display text-2xl w-full py-3 rounded-lg" style={{ background: '#e5383b' }} onClick={() => go('create_room')}>Tạo phòng</button>
+      <div className="flex gap-2">
+        <input className={inp} style={{ background: '#14293a' }} placeholder="Mã PIN" value={pin} onChange={e => setPin(e.target.value)} />
+        <button className="display text-2xl px-6 rounded-lg" style={{ background: '#2a7fff' }} onClick={() => go('join_room')}>Vào</button>
+      </div>
+      {err && <p style={{ color: '#ff8a8d' }} role="alert">{err}</p>}
+    </div></div>);
+
+  if (screen === 'lobby') return (
+    <div className="min-h-screen flex items-center justify-center p-4"><div className="w-full max-w-md space-y-4">
+      <div className="display text-6xl">PIN {lobby?.pin}</div>
+      <ul className="space-y-2">{lobby?.players.map(p => <li key={p.id} className="flex items-center gap-3 text-lg font-bold">
+        <span className="w-5 h-5 rounded-full" style={{ background: p.color }} />{p.name}{p.id === lobby.hostId && ' (host)'}</li>)}</ul>
+      {lobby?.hostId === me
+        ? <button className="display text-2xl w-full py-3 rounded-lg disabled:opacity-40" style={{ background: '#2eb872' }}
+            disabled={lobby.players.length < 2} onClick={() => socket.emit('game_start')}>Bắt đầu ({lobby.players.length} người, cần ≥2)</button>
+        : <p style={{ color: '#7ea1b8' }}>Đang chờ host bắt đầu…</p>}
+    </div></div>);
+
+  if (screen === 'over') return (
+    <div className="min-h-screen flex items-center justify-center p-4 text-center"><div className="space-y-3">
+      <div className="display text-6xl" style={{ color: over.winner === 'crew' ? '#2eb872' : '#e5383b' }}>{over.winner === 'crew' ? 'CREWMATE THẮNG' : 'IMPOSTOR THẮNG'}</div>
+      <p className="text-xl">{over.reason}</p>
+      <p>{over.roles.map(r => `${r.name}: ${r.role === 'impostor' ? 'Impostor' : 'Crewmate'}`).join(' · ')}</p>
+      <button className="display text-2xl px-8 py-3 rounded-lg" style={{ background: '#2a7fff' }} onClick={() => location.reload()}>Chơi lại</button>
+    </div></div>);
+
+  const isImp = init.role === 'impostor';
+  return (
+    <div className="max-w-6xl mx-auto p-3 space-y-3">
+      <div className="flex items-center gap-4 flex-wrap">
+        <span className="display text-xl px-3 py-1 rounded" style={{ background: isImp ? '#e5383b' : '#2a7fff' }}>{isImp ? 'IMPOSTOR' : 'CREWMATE'}</span>
+        <div className="flex-1 min-w-[160px]"><div className="h-4 rounded-full overflow-hidden" style={{ background: '#1c313f' }}>
+          <div className="h-full" style={{ width: pct + '%', background: '#2eb872' }} /></div>
+          <div className="text-xs mt-1" style={{ color: '#7ea1b8' }}>Nhiệm vụ chung {pct}%</div></div>
+        {isImp && <button onClick={onKill} className="display text-xl px-5 py-2 rounded-lg ring" style={{ background: cdLeft ? '#3a2a30' : '#e5383b', opacity: cdLeft ? .6 : 1 }}>
+          KILL (K) {cdLeft ? cdLeft + 's' : ''}</button>}
+      </div>
+      <Game init={init} stRef={stRef} myId={me} duelIds={duelIds} onKill={onKill} onTask={onTask} />
+      <p className="text-sm" style={{ color: '#7ea1b8' }}>WASD / mũi tên để di chuyển · {isImp ? 'K để rút kiếm khi đứng gần Crewmate' : 'E để làm nhiệm vụ tại ô vàng'} · 1–4 để chọn đáp án</p>
+      {toast && <div className="pop fixed top-4 left-1/2 -translate-x-1/2 z-40 display text-lg px-5 py-2 rounded-full" style={{ background: '#e5383b' }}>{toast}</div>}
+      {duel && <DuelModal duel={duel} result={result} myId={me} onAnswer={i => socket.emit('submit_duel_answer',
+        { roomId: lobby?.pin, questionId: duel.questionId, selectedOption: i, clientTimestamp: Date.now() })} />}
+    </div>);
+}
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
